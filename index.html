@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>HOOKAH NERD - 2D Platformer</title>
+<title>NITO - El Canario</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
@@ -165,11 +165,20 @@ class Enemy{
 // Inspector de Hacienda — walks back and forth with briefcase
 class Inspector extends Enemy{
   constructor(x,y){super(x,y,32,50);this.dir=1;this.t=0;}
+  edgeAhead(platforms){
+    for(const p of platforms){
+      if(this.y+this.h>=p.y-2&&this.y+this.h<=p.y+12){
+        const fx=this.dir>0?this.x+this.w+4:this.x-4;
+        if(fx>=p.x&&fx<=p.x+p.w)return true;
+      }
+    }
+    return false;
+  }
   update(platforms,fx){
     this.t++;
     this.x+=this.dir*1.3;
     this.landOn(platforms);
-    if(!this.edgeCheck(platforms)&&this.vy===0)this.dir*=-1;
+    if(!this.edgeAhead(platforms)&&this.vy===0)this.dir*=-1;
     if(this.x<20)this.dir=1;
     if(this.x>fx-40)this.dir=-1;
   }
@@ -771,38 +780,39 @@ class Game{
     const ctx=this.ctx;ctx.clearRect(0,0,W,H);
     this.bg.draw(ctx,this.camera.x);
     ctx.save();this.camera.apply(ctx);
-    this.plats.forEach(p=>p.draw(ctx));
-    // ── Lava pit — fully visible below all ground gaps ──────────────────────
-    // Deep lava fill from below ground to bottom
+    // ── Lava pit — drawn BEFORE platforms so platforms naturally cover it ────
+    // Solid lava base spanning full level width; visible only in gaps
     const lavaBg=ctx.createLinearGradient(0,H-60,0,H+60);
     lavaBg.addColorStop(0,'#ff6600');lavaBg.addColorStop(0.25,'#dd2200');lavaBg.addColorStop(0.6,'#990000');lavaBg.addColorStop(1,'#330000');
     ctx.fillStyle=lavaBg;ctx.fillRect(-200,H-60,this.levelW+400,120);
-    // Bright animated lava surface line
+    // Animated lava surface blobs — world-space x, no camera offset
     ctx.shadowColor='#ffaa00';ctx.shadowBlur=40;
-    for(let lx=-200;lx<this.levelW+200;lx+=80){
+    for(let lx=Math.floor(this.camera.x/80)*80-80;lx<this.camera.x+W+80;lx+=80){
       const wave=Math.sin(this.t*0.07+lx*0.015)*5;
       ctx.fillStyle=`rgba(255,${Math.floor(180+Math.sin(this.t*0.05+lx*0.02)*60)},0,1)`;
-      ctx.beginPath();ctx.ellipse(lx+this.camera.x%80,H-56+wave,44,10,0,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.ellipse(lx,H-56+wave,44,10,0,0,Math.PI*2);ctx.fill();
     }
     ctx.shadowBlur=0;
-    // Lava bubble blobs
-    for(let i=0;i<6;i++){
-      const bx=((i*280+this.t*0.8*(i%2?1:-1))%(this.levelW+400)-200);
+    // Lava bubble blobs — world-space positions
+    for(let i=0;i<8;i++){
+      const bx=this.camera.x+((i*180+this.t*0.8*(i%2?1:-1))%(W+200));
       const bpulse=0.5+Math.sin(this.t*0.12+i*1.5)*0.5;
-      ctx.globalAlpha=0.55+bpulse*0.35;
-      ctx.fillStyle=`rgba(255,${Math.floor(100+bpulse*100)},0,1)`;
-      ctx.shadowColor='#ff6600';ctx.shadowBlur=18;
-      ctx.beginPath();ctx.arc(bx,H-50+bpulse*4,12+bpulse*6,0,Math.PI*2);ctx.fill();
+      ctx.globalAlpha=0.6+bpulse*0.3;
+      ctx.fillStyle=`rgba(255,${Math.floor(120+bpulse*100)},0,1)`;
+      ctx.shadowColor='#ff6600';ctx.shadowBlur=20;
+      ctx.beginPath();ctx.arc(bx,H-52+bpulse*4,10+bpulse*6,0,Math.PI*2);ctx.fill();
     }
     ctx.globalAlpha=1;ctx.shadowBlur=0;
-    // Danger heat shimmer glow rising from lava
-    for(let sx=0;sx<W;sx+=120){
-      const shimmerX=sx+this.camera.x%120-60;
-      ctx.globalAlpha=0.07+Math.sin(this.t*0.05+sx)*0.04;
+    // Heat shimmer — use world-x = camera.x + screen column
+    for(let col=0;col<W;col+=120){
+      const shimmerX=this.camera.x+col;
+      ctx.globalAlpha=0.07+Math.sin(this.t*0.05+col)*0.04;
       ctx.fillStyle='#ff4400';ctx.shadowColor='#ff4400';ctx.shadowBlur=30;
-      ctx.beginPath();ctx.ellipse(shimmerX,H-75,55,35,0,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.ellipse(shimmerX,H-78,55,35,0,0,Math.PI*2);ctx.fill();
     }
     ctx.globalAlpha=1;ctx.shadowBlur=0;
+    // Platforms drawn ON TOP of lava — ground chunks hide lava, gaps expose it
+    this.plats.forEach(p=>p.draw(ctx));
     this.gems.forEach(g=>{if(!g.collected)g.draw(ctx);});
     this.enemies.forEach(e=>{if(e.alive)e.draw(ctx);});
     this.player.draw(ctx);
