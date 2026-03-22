@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>HOOKAH NERD - 2D Platformer</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background:#050008;
+  display:flex; justify-content:center; align-items:center;
+  min-height:100vh; overflow:hidden;
+  font-family:'Courier New',monospace;
+}
+canvas {
+  display:block;
+  border-radius:6px;
+  box-shadow:0 0 60px rgba(220,80,0,0.9),0 0 120px rgba(180,40,0,0.4);
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>'use strict';
+
+const W=960,H=540;
+const GRAV=0.55, PSPD=4.5, JFORCE=-13.5, COYOTE=8, JBUF=8;
+
+const lerp=(a,b,t)=>a+(b-a)*t;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const rand=(a,b)=>a+Math.random()*(b-a);
+const rInt=(a,b)=>Math.floor(rand(a,b+1));
+
+// ── Particles ──────────────────────────────────────────────────────────────
+class Particle{
+  constructor(x,y,vx,vy,col,sz,life,grav=0.05){
+    Object.assign(this,{x,y,vx,vy,col,sz,life,maxLife:life,grav,alpha:1});
+  }
+  update(){
+    this.x+=this.vx; this.y+=this.vy;
+    this.vy+=this.grav; this.vx*=0.97;
+    this.life--; this.alpha=this.life/this.maxLife; this.sz*=0.985;
+  }
+  draw(ctx){
+    ctx.save();
+    ctx.globalAlpha=this.alpha;
+    ctx.fillStyle=this.col;
+    ctx.shadowColor=this.col; ctx.shadowBlur=this.sz*2;
+    ctx.beginPath(); ctx.arc(this.x,this.y,Math.max(0.1,this.sz),0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+  get dead(){return this.life<=0||this.sz<0.1;}
+}
+
+class Particles{
+  constructor(){this.list=[];}
+  emit(x,y,o={}){
+    const n=o.count||8;
+    for(let i=0;i<n;i++){
+      const ang=o.angle!==undefined?o.angle+rand(-(o.spread||1),(o.spread||1)):rand(0,Math.PI*2);
+      const spd=rand(o.minSpd||1,o.maxSpd||4);
+      this.list.push(new Particle(
+        x+rand(-3,3),y+rand(-3,3),
+        Math.cos(ang)*spd,Math.sin(ang)*spd,
+        o.col||'#fff',rand(o.minSz||2,o.maxSz||5),
+        rand(o.minL||20,o.maxL||40),o.grav??0.05
+      ));
+    }
+  }
+  smoke(x,y,col='rgba(200,120,30,0.65)'){
+    this.emit(x,y,{count:2,col,minSpd:0.2,maxSpd:1.2,minSz:5,maxSz:13,minL:45,maxL:75,grav:-0.018,angle:-Math.PI/2,spread:0.7});
+  }
+  update(){this.list=this.list.filter(p=>{p.update();return!p.dead;});}
+  draw(ctx){this.list.forEach(p=>p.draw(ctx));}
+}
+
+// ── Platform ────────────────────────────────────────────────────────────────
+class Platform{
+  constructor(x,y,w,h,ground=false){
+    this.x=x;this.y=y;this.w=w;this.h=h;this.ground=ground;
+  }
+  draw(ctx){
+    const g=ctx.createLinearGradient(this.x,this.y,this.x,this.y+this.h);
+    if(this.ground){
+      // Volcanic rock / dark lava ground
+      g.addColorStop(0,'#2a0800');g.addColorStop(0.3,'#1a0400');g.addColorStop(1,'#0d0200');
+    } else {
+      // Brass hookah tray
+      g.addColorStop(0,'#7a4a00');g.addColorStop(0.4,'#5a3400');g.addColorStop(1,'#3a1a00');
+    }
+    ctx.fillStyle=g;
+    ctx.beginPath();
+    if(this.ground) ctx.rect(this.x,this.y,this.w,this.h);
+    else ctx.roundRect(this.x,this.y,this.w,this.h,8);
+    ctx.fill();
+    // Top edge glow
+    ctx.strokeStyle=this.ground?'#ff4400':'#c87a00';
+    ctx.lineWidth=2;ctx.shadowColor=this.ground?'#ff2200':'#ffaa00';ctx.shadowBlur=8;
+    ctx.beginPath();
+    ctx.moveTo(this.x+(this.ground?0:8),this.y+1);
+    ctx.lineTo(this.x+this.w-(this.ground?0:8),this.y+1);
+    ctx.stroke();ctx.shadowBlur=0;
+    if(this.ground){
+      // Lava crack pattern
+      ctx.strokeStyle='rgba(255,60,0,0.2)';ctx.lineWidth=1;
+      for(let x=this.x;x<this.x+this.w;x+=50){
+        ctx.beginPath();ctx.moveTo(x,this.y);ctx.lineTo(x+8,this.y+this.h*0.6);ctx.lineTo(x,this.y+this.h);ctx.stroke();
+      }
+    } else {
+      // Brass tray engraving dots
+      ctx.fillStyle='rgba(255,180,0,0.25)';
+      for(let dx=8;dx<this.w-8;dx+=18){
+        ctx.beginPath();ctx.arc(this.x+dx,this.y+9,2,0,Math.PI*2);ctx.fill();
+      }
+    }
+  }
+}
+
+// ── Collectible: Banana ──────────────────────────────────────────────────────
+class Banana{
+  constructor(x,y){this.x=x;this.y=y;this.t=rand(0,Math.PI*2);this.collected=false;}
+  get rect(){return{x:this.x-10,y:this.y-10+Math.sin(this.t)*5,w:20,h:20};}
+  update(){this.t+=0.04;}
+  draw(ctx){
+    const by=Math.sin(this.t)*5;
+    ctx.save();ctx.translate(this.x,this.y+by);
+    ctx.shadowColor='#ffe135';ctx.shadowBlur=12;
+    // banana body — curved arc
+    ctx.strokeStyle='#f4c430';ctx.lineWidth=7;ctx.lineCap='round';
+    ctx.beginPath();ctx.arc(0,4,10,-Math.PI*0.85,-Math.PI*0.05);ctx.stroke();
+    ctx.strokeStyle='#e6a800';ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(0,4,10,-Math.PI*0.85,-Math.PI*0.05);ctx.stroke();
+    // tips
+    ctx.fillStyle='#c8860a';
+    ctx.beginPath();ctx.arc(-9,-2,2.5,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(9,0,2.5,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ── Enemies ─────────────────────────────────────────────────────────────────
+class Enemy{
+  constructor(x,y,w,h){this.x=x;this.y=y;this.w=w;this.h=h;this.vx=0;this.vy=0;this.alive=true;}
+  get rect(){return{x:this.x,y:this.y,w:this.w,h:this.h};}
+  stomp(){this.alive=false;}
+  landOn(platforms){
+    this.vy+=GRAV; if(this.vy>18)this.vy=18;
+    this.y+=this.vy;
+    for(const p of platforms){
+      if(this.x+this.w>p.x&&this.x<p.x+p.w&&this.vy>=0&&this.y+this.h>=p.y&&this.y+this.h-this.vy<=p.y+6){
+        this.y=p.y-this.h; this.vy=0;
+      }
+    }
+  }
+  edgeCheck(platforms){
+    for(const p of platforms){
+      if(this.y+this.h>=p.y-2&&this.y+this.h<=p.y+12){
+        const fx=this.vx>0?this.x+this.w+4:this.x-4;
+        if(fx>=p.x&&fx<=p.x+p.w) return true;
+      }
+    }
+    return false;
+  }
+}
+
+// Inspector de Hacienda — walks back and forth with briefcase
+class Inspector extends Enemy{
+  constructor(x,y){super(x,y,32,50);this.dir=1;this.t=0;}
+  update(platforms,fx){
+    this.t++;
+    this.x+=this.dir*1.3;
+    this.landOn(platforms);
+    if(!this.edgeCheck(platforms)&&this.vy===0)this.dir*=-1;
+    if(this.x<20)this.dir=1;
+    if(this.x>fx-40)this.dir=-1;
+  }
+  draw(ctx){
+    const{x,y,t}=this;
+    const ls=Math.sin(t*0.18)*7;
+    ctx.save();
+    // legs — dark trousers
+    ctx.fillStyle='#1c2a40';
+    ctx.beginPath();ctx.roundRect(x+4,y+34,10,16+ls,2);ctx.fill();
+    ctx.beginPath();ctx.roundRect(x+18,y+34,10,16-ls,2);ctx.fill();
+    // shoes
+    ctx.fillStyle='#111';
+    ctx.beginPath();ctx.roundRect(x+2,y+49+ls,13,5,2);ctx.fill();
+    ctx.beginPath();ctx.roundRect(x+17,y+49-ls,13,5,2);ctx.fill();
+    // suit body
+    ctx.fillStyle='#243040';ctx.shadowColor='#243040';ctx.shadowBlur=6;
+    ctx.beginPath();ctx.roundRect(x+2,y+18,28,18,4);ctx.fill();
+    ctx.shadowBlur=0;
+    // white shirt & tie
+    ctx.fillStyle='#eee';ctx.beginPath();ctx.roundRect(x+12,y+18,8,14,2);ctx.fill();
+    ctx.fillStyle='#c0392b';ctx.beginPath();ctx.moveTo(x+16,y+20);ctx.lineTo(x+19,y+28);ctx.lineTo(x+16,y+31);ctx.lineTo(x+13,y+28);ctx.closePath();ctx.fill();
+    // briefcase (arm holding it)
+    const as=Math.sin(t*0.18)*6;
+    ctx.fillStyle='#243040';
+    ctx.beginPath();ctx.roundRect(x-2,y+22+as*0.3,7,12,2);ctx.fill(); // left arm
+    ctx.beginPath();ctx.roundRect(x+27,y+22-as*0.3,7,12,2);ctx.fill(); // right arm
+    // briefcase itself on right side
+    ctx.fillStyle='#8B6914';ctx.shadowColor='#e9c46a';ctx.shadowBlur=4;
+    ctx.beginPath();ctx.roundRect(x+28,y+28,14,12,3);ctx.fill();
+    ctx.strokeStyle='#e9c46a';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(x+32,y+28);ctx.lineTo(x+38,y+28);ctx.stroke(); // handle
+    ctx.shadowBlur=0;
+    // head
+    ctx.fillStyle='#f4c18a';
+    ctx.beginPath();ctx.arc(x+16,y+11,11,0,Math.PI*2);ctx.fill();
+    // hair — slicked back
+    ctx.fillStyle='#1a1a1a';
+    ctx.beginPath();ctx.ellipse(x+16,y+3,10,6,0,Math.PI,0);ctx.fill();
+    // eyes — stern look
+    ctx.fillStyle='#111';
+    ctx.beginPath();ctx.arc(x+12,y+11,2,0,Math.PI*2);ctx.arc(x+20,y+11,2,0,Math.PI*2);ctx.fill();
+    // frown
+    ctx.strokeStyle='#333';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.arc(x+16,y+18,4,Math.PI+0.3,-0.3);ctx.stroke();
+    // stamp on chest — "HACIENDA"
+    ctx.fillStyle='rgba(192,57,43,0.8)';ctx.font='bold 5px sans-serif';ctx.textAlign='center';
+    ctx.fillText('HACIENDA',x+16,y+28);
+    ctx.restore();
+  }
+}
+
+// Formulario Volador — floating tax form that drifts menacingly
+class FormularioVolador extends Enemy{
+  constructor(x,y){super(x,y,36,30);this.baseY=y;this.t=rand(0,Math.PI*2);this.dir=Math.random()>.5?1:-1;this.spd=0.65+rand(0,0.5);}
+  update(){
+    this.t+=0.02;
+    this.x+=this.dir*this.spd;
+    this.y=this.baseY+Math.sin(this.t*1.3)*30;
+    if(Math.random()<0.004)this.dir*=-1;
+  }
+  draw(ctx){
+    const{x,y,t}=this;
+    const wobble=Math.sin(t*2)*3;
+    ctx.save();
+    ctx.translate(x+18,y+15);ctx.rotate(wobble*0.04);ctx.translate(-18,-15);
+    // paper
+    ctx.shadowColor='#c0392b';ctx.shadowBlur=10;
+    ctx.fillStyle='#f5f0e8';
+    ctx.beginPath();ctx.roundRect(x,y,36,30,2);ctx.fill();
+    ctx.shadowBlur=0;
+    // red header bar
+    ctx.fillStyle='#c0392b';ctx.beginPath();ctx.roundRect(x,y,36,8,2);ctx.fill();
+    ctx.fillStyle='#fff';ctx.font='bold 5px sans-serif';ctx.textAlign='center';
+    ctx.fillText('HACIENDA',x+18,y+6);
+    // text lines
+    ctx.fillStyle='#666';ctx.fillRect(x+3,y+11,20,2);ctx.fillRect(x+3,y+15,28,2);ctx.fillRect(x+3,y+19,24,2);ctx.fillRect(x+3,y+23,16,2);
+    // angry stamp
+    ctx.fillStyle='rgba(192,57,43,0.7)';ctx.font='bold 8px sans-serif';ctx.textAlign='center';
+    ctx.save();ctx.translate(x+28,y+22);ctx.rotate(-0.4);ctx.fillText('DEBE',0,0);ctx.restore();
+    ctx.restore();
+  }
+}
+
+// Carta de Apremio — bouncing demand letter
+class CartaApremio extends Enemy{
+  constructor(x,y){super(x,y,26,20);this.vx=(Math.random()>.5?1:-1)*2;this.vy=-4;this.t=0;}
+  update(platforms,fx,ps){
+    this.t++;
+    this.vy+=GRAV*0.8;if(this.vy>18)this.vy=18;
+    this.x+=this.vx;this.y+=this.vy;
+    for(const p of platforms){
+      if(this.x+this.w>p.x&&this.x<p.x+p.w&&this.vy>=0&&this.y+this.h>=p.y&&this.y+this.h-this.vy<=p.y+6){
+        this.y=p.y-this.h;this.vy=-(6+rand(0,3));
+        ps.emit(this.x+13,this.y+20,{count:4,col:'#c0392b',minSpd:1,maxSpd:3,minSz:1,maxSz:4,minL:12,maxL:20,angle:-Math.PI/2,spread:1.2,grav:0.1});
+      }
+    }
+    if(this.x<10)this.vx=Math.abs(this.vx);
+    if(this.x>fx-30)this.vx=-Math.abs(this.vx);
+  }
+  draw(ctx){
+    const{x,y,t}=this;
+    const spin=t*0.08;
+    ctx.save();ctx.translate(x+13,y+10);ctx.rotate(spin);ctx.translate(-13,-10);
+    ctx.shadowColor='#c0392b';ctx.shadowBlur=8;
+    // envelope body
+    ctx.fillStyle='#f0e6d0';ctx.beginPath();ctx.roundRect(x,y,26,20,2);ctx.fill();
+    ctx.strokeStyle='#c0392b';ctx.lineWidth=1.5;ctx.stroke();
+    // envelope flap V
+    ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+13,y+11);ctx.lineTo(x+26,y);ctx.stroke();
+    // angry red stamp
+    ctx.fillStyle='rgba(192,57,43,0.9)';ctx.font='bold 6px sans-serif';ctx.textAlign='center';
+    ctx.fillText('APREMIO',x+13,y+16);
+    ctx.shadowBlur=0;ctx.restore();
+  }
+}
+
+// ── Player ──────────────────────────────────────────────────────────────────
+const QUOTES=[
+  'Ustedes hasen mucha\nbroma con el volcanito, no?',
+  'Me desetrui el lavaplatos\ncon la base',
+  'Que alguien me quite\nel movil de la espalda',
+];
+class Player{
+  constructor(x,y){
+    this.x=x;this.y=y;this.w=34;this.h=48;
+    this.vx=0;this.vy=0;this.onGround=false;
+    this.coyote=0;this.jbuf=0;this.facing=1;
+    this.walkT=0;this.sq=1;this.sqV=0;this.t=0;
+    this.inv=0;this.respawn=0;this.lives=3;this.score=0;
+    this.quoteTimer=0;this.quoteIdx=0;this.quoteVisible=false;
+  }
+  get rect(){return{x:this.x,y:this.y,w:this.w,h:this.h};}
+  update(inp,platforms,ps){
+    if(this.respawn>0){this.respawn--;return;}
+    this.t++;
+    if(this.inv>0)this.inv--;
+    if(inp.right){this.vx=lerp(this.vx,PSPD,0.2);this.facing=1;}
+    else if(inp.left){this.vx=lerp(this.vx,-PSPD,0.2);this.facing=-1;}
+    else this.vx=lerp(this.vx,0,0.25);
+    if(Math.abs(this.vx)>0.5)this.walkT+=0.15;
+    if(inp.jumpPressed)this.jbuf=JBUF;
+    if(this.jbuf>0)this.jbuf--;
+    if(this.jbuf>0&&this.coyote>0){
+      this.vy=JFORCE;this.jbuf=0;this.coyote=0;this.sq=1.35;
+      ps.emit(this.x+17,this.y+48,{count:10,col:'#ff7700',minSpd:1,maxSpd:5,minSz:2,maxSz:6,minL:15,maxL:25,angle:Math.PI/2,spread:1.1,grav:0.1});
+    }
+    this.vy+=GRAV; if(this.vy>20)this.vy=20;
+    this.x+=this.vx; this.y+=this.vy;
+    if(this.onGround)this.coyote=COYOTE;
+    else if(this.coyote>0)this.coyote--;
+    const wasOnGround=this.onGround;
+    this.onGround=false;
+    for(const p of platforms){
+      if(this.y+this.h>p.y+4&&this.y<p.y+p.h){
+        if(this.x+this.w>p.x&&this.x<p.x+p.w){
+          if(this.vx>0&&this.x+this.w-this.vx<=p.x+2){this.x=p.x-this.w;this.vx=0;}
+          else if(this.vx<0&&this.x-this.vx>=p.x+p.w-2){this.x=p.x+p.w;this.vx=0;}
+        }
+      }
+      if(this.x+this.w>p.x+4&&this.x<p.x+p.w-4){
+        if(this.vy>=0&&this.y+this.h>=p.y&&this.y+this.h-this.vy<=p.y+8){
+          this.y=p.y-this.h;this.vy=0;this.onGround=true;
+          this.lastSafeX=this.x;this.lastSafeY=this.y;
+          if(!wasOnGround&&this.sq<0.88)
+            ps.emit(this.x+17,this.y+48,{count:6,col:'#7b2ff7',minSpd:1,maxSpd:3,minSz:1,maxSz:4,minL:10,maxL:20,angle:Math.PI/2,spread:1.5,grav:0.1});
+        }else if(this.vy<0&&this.y<=p.y+p.h&&this.y-this.vy>=p.y+p.h-4){
+          this.y=p.y+p.h;this.vy=0;
+        }
+      }
+    }
+    const tgt=this.onGround?(Math.abs(this.vx)>2?1+Math.sin(this.walkT)*0.05:1):(this.vy<0?0.8:1.1);
+    this.sqV+=(tgt-this.sq)*0.3;this.sqV*=0.6;this.sq+=this.sqV;
+    if(this.x<0){this.x=0;this.vx=0;}
+    if(this.y>H+200)this.hurt(ps,true);
+    // Random quote bubble
+    if(this.quoteTimer>0)this.quoteTimer--;
+    else if(this.quoteVisible){this.quoteVisible=false;this.quoteTimer=rInt(300,600);}
+    else if(this.quoteTimer===0&&!this.quoteVisible){
+      this.quoteVisible=true;
+      this.quoteIdx=rInt(0,QUOTES.length-1);
+      this.quoteTimer=220;
+    }
+  }
+  hurt(ps,fall=false){
+    if(this.inv>0)return;
+    this.lives--;this.inv=120;this.respawn=55;
+    ps.emit(this.x+17,this.y+24,{count:18,col:'#ff6b6b',minSpd:2,maxSpd:8,minSz:3,maxSz:8,minL:30,maxL:60,grav:0.1});
+    // Always reset position so the player doesn't keep falling after respawn
+    this.x=this.lastSafeX||80; this.y=this.lastSafeY||(H-200);
+    this.vx=0; this.vy=0;
+  }
+  draw(ctx){
+    if(this.respawn>0)return;
+    if(this.inv>0&&Math.floor(this.inv/5)%2===0)return;
+    const sx=1/this.sq,sy=this.sq;
+    ctx.save();
+    ctx.translate(this.x+this.w/2,this.y+this.h);
+    ctx.scale(this.facing*sx,sy);
+    ctx.translate(-17,-48);
+    const ls=this.onGround?Math.sin(this.walkT)*8:0;
+    const as=this.onGround?Math.sin(this.walkT)*8:0;
+    // legs — shorts (Canarian style)
+    ctx.fillStyle='#1a4a2c';
+    ctx.beginPath();ctx.roundRect(2,34,11,15+ls,3);ctx.fill();
+    ctx.beginPath();ctx.roundRect(21,34,11,15-ls,3);ctx.fill();
+    // shoes
+    ctx.fillStyle='#f4c430';
+    ctx.beginPath();ctx.roundRect(0,48+ls,14,5,2);ctx.fill();
+    ctx.beginPath();ctx.roundRect(20,48-ls,14,5,2);ctx.fill();
+    // body — colourful Canarian shirt (yellow/green)
+    ctx.shadowColor='#e9c46a';ctx.shadowBlur=6;
+    ctx.fillStyle='#e9c46a';
+    ctx.beginPath();ctx.ellipse(17,28,18,20,0,0,Math.PI*2);ctx.fill();
+    ctx.shadowBlur=0;
+    // shirt pattern stripes
+    ctx.strokeStyle='rgba(34,139,34,0.4)';ctx.lineWidth=2;
+    for(let i=-14;i<20;i+=7){ctx.beginPath();ctx.moveTo(i,12);ctx.lineTo(i+10,44);ctx.stroke();}
+    // belly shine
+    ctx.fillStyle='rgba(255,255,255,0.12)';
+    ctx.beginPath();ctx.ellipse(11,22,7,5,-0.3,0,Math.PI*2);ctx.fill();
+    // left arm
+    ctx.fillStyle='#e9c46a';
+    ctx.beginPath();ctx.roundRect(-3,15+as*0.3,7,14,3);ctx.fill();
+    // right arm holds phone
+    ctx.fillStyle='#e9c46a';
+    ctx.beginPath();ctx.roundRect(30,15-as*0.3,7,14,3);ctx.fill();
+    // mobile phone in right hand
+    ctx.fillStyle='#111';ctx.shadowColor='#00aaff';ctx.shadowBlur=8;
+    ctx.beginPath();ctx.roundRect(33,22-as*0.3,10,16,2);ctx.fill();
+    ctx.shadowBlur=0;
+    ctx.fillStyle='#1a8aff';ctx.beginPath();ctx.roundRect(34,24-as*0.3,8,11,1);ctx.fill();
+    // screen glow on face
+    ctx.fillStyle='rgba(0,170,255,0.1)';ctx.beginPath();ctx.arc(17,12,13,0,Math.PI*2);ctx.fill();
+    // head — chubby Canarian
+    ctx.shadowColor='#f4a261';ctx.shadowBlur=5;
+    ctx.fillStyle='#f4a261';
+    ctx.beginPath();ctx.arc(17,12,13,0,Math.PI*2);ctx.fill();
+    ctx.shadowBlur=0;
+    // dark curly hair
+    ctx.fillStyle='#1a0a00';
+    ctx.beginPath();ctx.ellipse(17,2,12,7,0,Math.PI,0);ctx.fill();
+    ctx.beginPath();ctx.arc(5,5,5,0,Math.PI*2);ctx.arc(29,5,4,0,Math.PI*2);ctx.arc(17,0,5,0,Math.PI*2);ctx.fill();
+    // eyes
+    ctx.fillStyle='#2a1000';
+    ctx.beginPath();ctx.arc(11,12,2.5,0,Math.PI*2);ctx.arc(23,12,2.5,0,Math.PI*2);ctx.fill();
+    // smile — always happy
+    ctx.strokeStyle='#a0522d';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.arc(17,15,5,0.1,Math.PI-0.1);ctx.stroke();
+    // cheeks
+    ctx.fillStyle='rgba(230,120,70,0.38)';
+    ctx.beginPath();ctx.arc(7,15,3,0,Math.PI*2);ctx.arc(27,15,3,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+    // Speech bubble (drawn in world space, above character)
+    if(this.quoteVisible&&this.quoteTimer>0){
+      const alpha=Math.min(1,this.quoteTimer/15)*Math.min(1,(220-this.quoteTimer+1)/15+0.1);
+      const lines=QUOTES[this.quoteIdx].split('\n');
+      const bx=this.x+this.w/2,by=this.y-18;
+      const bw=Math.max(...lines.map(l=>l.length))*6.5+16;
+      const bh=lines.length*16+14;
+      ctx.save();ctx.globalAlpha=alpha;
+      ctx.fillStyle='rgba(255,252,240,0.95)';ctx.strokeStyle='#c0392b';ctx.lineWidth=2;
+      ctx.shadowColor='#c0392b';ctx.shadowBlur=8;
+      ctx.beginPath();ctx.roundRect(bx-bw/2,by-bh,bw,bh,6);ctx.fill();ctx.stroke();
+      // tail
+      ctx.fillStyle='rgba(255,252,240,0.95)';ctx.strokeStyle='#c0392b';
+      ctx.beginPath();ctx.moveTo(bx-6,by);ctx.lineTo(bx,by+10);ctx.lineTo(bx+6,by);ctx.fill();ctx.stroke();
+      ctx.shadowBlur=0;
+      ctx.fillStyle='#1a0a00';ctx.font='bold 11px "Courier New"';ctx.textAlign='center';
+      lines.forEach((l,i)=>ctx.fillText(l,bx,by-bh+20+i*16));
+      ctx.restore();
+    }
+  }
+}
+
+// ── Camera ──────────────────────────────────────────────────────────────────
+class Camera{
+  constructor(){this.x=0;this.shX=0;this.shY=0;this.shT=0;}
+  update(p){
+    this.x=lerp(this.x,Math.max(0,p.x+17-W/3),0.09);
+    if(this.shT>0){this.shX=rand(-5,5)*(this.shT/10);this.shY=rand(-4,4)*(this.shT/10);this.shT--;}
+    else{this.shX=lerp(this.shX,0,0.3);this.shY=lerp(this.shY,0,0.3);}
+  }
+  shake(n=8){this.shT=n;}
+  apply(ctx){ctx.translate(-this.x+this.shX,this.shY);}
+}
+
+// ── Background ──────────────────────────────────────────────────────────────
+class Background{
+  constructor(){
+    this.embers=Array.from({length:55},()=>({
+      x:rand(0,5200),y:rand(H*0.3,H*0.9),r:rand(0.5,2.2),
+      tw:rand(0,Math.PI*2),spd:rand(0.06,0.22),vy:-rand(0.3,0.8),drift:rand(-0.3,0.3)
+    }));
+    this.t=0;
+  }
+  update(){
+    this.t++;
+    this.embers.forEach(e=>{
+      e.y+=e.vy; e.x+=e.drift; e.tw+=0.03;
+      if(e.y<-10){e.y=H+5;e.x=rand(0,5200);}
+    });
+  }
+  // Ornate hookah pipe silhouette
+  drawHookah(ctx,x,y,s,a){
+    ctx.save();ctx.globalAlpha=a;
+    ctx.translate(x,y);ctx.scale(s,s);
+    // base plate
+    ctx.fillStyle='#7a3a00';ctx.beginPath();ctx.ellipse(0,8,22,6,0,0,Math.PI*2);ctx.fill();
+    // water vase
+    ctx.fillStyle='#5c2800';ctx.beginPath();ctx.ellipse(0,-10,14,20,0,0,Math.PI*2);ctx.fill();
+    // vase highlight
+    ctx.fillStyle='rgba(255,160,60,0.2)';ctx.beginPath();ctx.ellipse(-4,-14,5,8,0,0,Math.PI*2);ctx.fill();
+    // stem
+    ctx.fillStyle='#8B5E00';ctx.beginPath();ctx.roundRect(-4,-70,8,62,2);ctx.fill();
+    // bowl
+    ctx.fillStyle='#6b3800';ctx.beginPath();ctx.ellipse(0,-72,16,10,0,0,Math.PI*2);ctx.fill();
+    // coal glow
+    ctx.shadowColor='#ff4400';ctx.shadowBlur=15*a*5;
+    ctx.fillStyle='rgba(255,100,0,0.8)';ctx.beginPath();ctx.ellipse(0,-78,8,4,0,0,Math.PI*2);ctx.fill();
+    ctx.shadowBlur=0;
+    // hose
+    ctx.strokeStyle='#7a3a00';ctx.lineWidth=3;ctx.beginPath();
+    ctx.moveTo(10,-10);ctx.quadraticCurveTo(35,5,30,25);ctx.stroke();
+    ctx.restore();
+  }
+  // Volcano silhouette
+  drawVolcano(ctx,x,y,s,t){
+    ctx.save();ctx.translate(x,y);ctx.scale(s,s);
+    // dark volcanic rock body
+    ctx.fillStyle='#1a0a00';
+    ctx.beginPath();ctx.moveTo(-80,0);ctx.lineTo(-20,-120);ctx.lineTo(20,-120);ctx.lineTo(80,0);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#2a1000';
+    ctx.beginPath();ctx.moveTo(-60,0);ctx.lineTo(-10,-95);ctx.lineTo(10,-95);ctx.lineTo(60,0);ctx.closePath();ctx.fill();
+    // crater glow
+    const lavaPulse=0.6+Math.sin(t*0.04)*0.4;
+    const lavag=ctx.createRadialGradient(0,-120,2,0,-120,22);
+    lavag.addColorStop(0,`rgba(255,200,0,${lavaPulse})`);
+    lavag.addColorStop(0.5,`rgba(255,80,0,${lavaPulse*0.7})`);
+    lavag.addColorStop(1,'rgba(255,0,0,0)');
+    ctx.fillStyle=lavag;ctx.shadowColor='#ff4400';ctx.shadowBlur=20;
+    ctx.beginPath();ctx.ellipse(0,-120,22,10,0,0,Math.PI*2);ctx.fill();
+    ctx.shadowBlur=0;
+    ctx.restore();
+  }
+  draw(ctx,camX){
+    // Sky: smoky hookah lounge — deep warm amber below, dark maroon/indigo above
+    const sky=ctx.createLinearGradient(0,0,0,H);
+    sky.addColorStop(0,'#0e0005');
+    sky.addColorStop(0.4,'#1f0510');
+    sky.addColorStop(0.75,'#3d1000');
+    sky.addColorStop(1,'#5c1800');
+    ctx.fillStyle=sky;ctx.fillRect(0,0,W,H);
+
+    // Lava glow on horizon line
+    const lava=ctx.createLinearGradient(0,H*0.72,0,H);
+    lava.addColorStop(0,'rgba(180,40,0,0)');
+    lava.addColorStop(1,'rgba(255,80,0,0.18)');
+    ctx.fillStyle=lava;ctx.fillRect(0,H*0.72,W,H*0.28);
+
+    // Far-back volcanoes (parallax 0.05)
+    for(let i=0;i<5;i++){
+      const bx=((i*700+100-camX*0.05)%(W+700)+W+700)%(W+700)-150;
+      this.drawVolcano(ctx,bx,H-60,0.55+i%2*0.15,this.t+i*40);
+    }
+
+    // Mid-layer volcanoes (parallax 0.12)
+    for(let i=0;i<3;i++){
+      const bx=((i*900+350-camX*0.12)%(W+900)+W+900)%(W+900)-150;
+      this.drawVolcano(ctx,bx,H-60,0.8+i%2*0.2,this.t+i*70);
+    }
+
+    // Background hookah pipes (parallax 0.14)
+    for(let i=0;i<6;i++){
+      const bx=((i*550+80-camX*0.14)%(W+550)+W+550)%(W+550)-80;
+      this.drawHookah(ctx,bx,H-60,0.55+i%3*0.1,0.18+i%2*0.06);
+    }
+
+    // Ember / ash particles
+    this.embers.forEach(e=>{
+      const a=0.25+Math.sin(e.tw)*0.2;
+      const sx=((e.x-camX*e.spd)%(W+60)+W+60)%(W+60);
+      ctx.globalAlpha=a;
+      ctx.fillStyle=e.r>1.5?'#ff7733':'#ffaa55';
+      ctx.shadowColor='#ff5500';ctx.shadowBlur=e.r*4;
+      ctx.beginPath();ctx.arc(sx,e.y,e.r,0,Math.PI*2);ctx.fill();
+    });
+    ctx.globalAlpha=1;ctx.shadowBlur=0;
+
+    // Smoke wisps near top
+    for(let i=0;i<5;i++){
+      const sx=((i*220+this.t*0.4*(i%2?1:-1)-camX*0.08)%(W+220)+W+220)%(W+220);
+      const sy=30+i*18+Math.sin(this.t*0.008+i)*15;
+      ctx.globalAlpha=0.04+Math.sin(this.t*0.02+i)*0.02;
+      ctx.fillStyle='#c87030';ctx.shadowColor='#ff6600';ctx.shadowBlur=40;
+      ctx.beginPath();ctx.arc(sx,sy,55+i*10,0,Math.PI*2);ctx.fill();
+    }
+    ctx.globalAlpha=1;ctx.shadowBlur=0;
+  }
+}
+
+// ── Level builder ────────────────────────────────────────────────────────────
+function buildLevel(){
+  const plats=[],enemies=[],gems=[];
+  // ground chunks (with gaps)
+  [[0,480],[650,1050],[1150,1750],[1900,2400],[2550,3100],[3200,4000],[4100,5100]].forEach(([a,b])=>{
+    plats.push(new Platform(a,H-60,b-a,60,true));
+  });
+  // floating platforms
+  [
+    [180,H-155,110],[350,H-235,100],[540,H-175,120],[720,H-265,100],
+    [900,H-195,115],[1060,H-295,100],[1230,H-175,130],[1420,H-275,110],
+    [1580,H-195,110],[1740,H-315,120],[1920,H-195,115],[2060,H-295,100],
+    [2250,H-245,125],[2420,H-175,110],[2600,H-295,115],[2740,H-195,100],
+    [2880,H-345,125],[3020,H-245,115],[3170,H-175,110],[3330,H-275,125],
+    [3490,H-195,115],[3640,H-315,100],[3790,H-245,125],[3940,H-175,110],
+    [4080,H-295,115],[4230,H-215,120],[4380,H-335,100],[4530,H-195,125],
+    [4680,H-275,110],[4830,H-195,120],
+  ].forEach(([x,y,w])=>plats.push(new Platform(x,y,w,18)));
+  // enemies — Hacienda Pública themed
+  [[280,H-120],[820,H-120],[1300,H-120],[1980,H-120],[2620,H-120],[3260,H-120],[3880,H-120],[4460,H-120]].forEach(([x,y])=>enemies.push(new Inspector(x,y)));
+  [[490,H-290],[1040,H-375],[1580,H-300],[2230,H-345],[2860,H-420],[3460,H-300],[4100,H-360]].forEach(([x,y])=>enemies.push(new FormularioVolador(x,y)));
+  [[680,H-220],[1500,H-220],[2100,H-220],[3000,H-220],[3700,H-220],[4400,H-220]].forEach(([x,y])=>enemies.push(new CartaApremio(x,y)));
+  // bananas
+  for(let x=120;x<5000;x+=160){
+    gems.push(new Banana(x,H-120+Math.sin(x*0.009)*55));
+  }
+  return{plats,enemies,gems};
+}
+
+// ── Collision ────────────────────────────────────────────────────────────────
+function overlap(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;}
+
+// ── HUD ──────────────────────────────────────────────────────────────────────
+function drawHUD(ctx,player,levelW){
+  ctx.save();
+  ctx.fillStyle='#e9c46a';ctx.shadowColor='#e9c46a';ctx.shadowBlur=8;
+  ctx.font='bold 20px "Courier New"';
+  ctx.fillText(`SCORE: ${player.score}`,18,32);
+  ctx.fillStyle='#ff6b6b';ctx.shadowColor='#ff6b6b';
+  ctx.fillText('LIVES:',18,58);
+  for(let i=0;i<player.lives;i++){
+    ctx.beginPath();ctx.arc(112+i*26,50,8,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,0.4)';ctx.beginPath();ctx.arc(109+i*26,47,3,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#ff6b6b';
+  }
+  // progress bar
+  const bw=200,bx=W/2-bw/2,by=12,pct=clamp(player.x/levelW,0,1);
+  ctx.fillStyle='rgba(40,20,80,0.7)';ctx.beginPath();ctx.roundRect(bx,by,bw,10,5);ctx.fill();
+  ctx.fillStyle='#ff6a00';ctx.shadowColor='#ff4400';ctx.shadowBlur=10;
+  ctx.beginPath();ctx.roundRect(bx,by,bw*pct,10,5);ctx.fill();
+  ctx.shadowBlur=0;
+  ctx.fillStyle='rgba(255,160,0,0.6)';ctx.font='11px "Courier New"';ctx.textAlign='center';
+  ctx.fillText('NITO — EL CANARIO',W/2,H-10);
+  ctx.restore();
+}
+
+// ── Screens ──────────────────────────────────────────────────────────────────
+function drawStart(ctx,t){
+  ctx.fillStyle='rgba(0,0,0,0.82)';ctx.fillRect(0,0,W,H);
+  ctx.save();ctx.textAlign='center';
+  const p=1+Math.sin(t*0.05)*0.04;
+  ctx.translate(W/2,H/2-90);ctx.scale(p,p);
+  ctx.shadowColor='#7b2ff7';ctx.shadowBlur=35;
+  ctx.fillStyle='#ffe135';ctx.shadowColor='#ffe135';ctx.font='bold 80px "Courier New"';ctx.fillText('NITO',0,0);
+  ctx.fillStyle='#ff6a00';ctx.shadowColor='#ff6a00';ctx.shadowBlur=20;ctx.font='bold 32px "Courier New"';
+  ctx.fillText('EL CANARIO',0,58);
+  ctx.restore();ctx.save();ctx.textAlign='center';
+  ctx.fillStyle='rgba(255,200,80,0.85)';ctx.font='15px "Courier New"';ctx.shadowColor='#ff6a00';ctx.shadowBlur=8;
+  ctx.fillText('HUYENDO DE LA HACIENDA PUBLICA EN EL TEIDE',W/2,H/2+20);
+  const blink=0.5+Math.sin(t*0.1)*0.5;
+  ctx.globalAlpha=blink;ctx.fillStyle='#e9c46a';ctx.shadowColor='#e9c46a';ctx.font='bold 20px "Courier New"';
+  ctx.fillText('PRESS SPACE TO START',W/2,H/2+65);
+  ctx.globalAlpha=1;ctx.fillStyle='rgba(160,140,200,0.55)';ctx.font='13px "Courier New"';
+  ctx.fillText('FLECHAS / WASD — MOVER     ESPACIO — SALTAR     PISA LOS INSPECTORES!',W/2,H-28);
+  ctx.restore();
+}
+
+function drawGameOver(ctx,score,t){
+  ctx.fillStyle='rgba(0,0,0,0.88)';ctx.fillRect(0,0,W,H);
+  ctx.save();ctx.textAlign='center';
+  ctx.shadowColor='#e63946';ctx.shadowBlur=28;ctx.fillStyle='#e63946';
+  ctx.font='bold 58px "Courier New"';ctx.fillText('GAME OVER',W/2,H/2-55);
+  ctx.fillStyle='#e9c46a';ctx.shadowColor='#e9c46a';ctx.font='24px "Courier New"';
+  ctx.fillText(`FINAL SCORE: ${score}`,W/2,H/2+5);
+  const b=0.5+Math.sin(t*0.1)*0.5;
+  ctx.globalAlpha=b;ctx.fillStyle='#9b4fff';ctx.font='bold 20px "Courier New"';
+  ctx.fillText('PRESS SPACE TO RESTART',W/2,H/2+60);ctx.restore();
+}
+
+function drawWin(ctx,score,t){
+  ctx.fillStyle='rgba(0,0,0,0.88)';ctx.fillRect(0,0,W,H);
+  ctx.save();ctx.textAlign='center';
+  ctx.shadowColor='#e9c46a';ctx.shadowBlur=28;ctx.fillStyle='#e9c46a';
+  ctx.font='bold 58px "Courier New"';ctx.fillText('YOU WIN!',W/2,H/2-55);
+  ctx.fillStyle='#2a9d8f';ctx.shadowColor='#2a9d8f';ctx.font='24px "Courier New"';
+  ctx.fillText(`FINAL SCORE: ${score}`,W/2,H/2+5);
+  const b=0.5+Math.sin(t*0.1)*0.5;
+  ctx.globalAlpha=b;ctx.fillStyle='#9b4fff';ctx.font='bold 20px "Courier New"';
+  ctx.fillText('PRESS SPACE TO RESTART',W/2,H/2+60);ctx.restore();
+}
+
+// ── Floating score text ──────────────────────────────────────────────────────
+class FloatText{
+  constructor(x,y,txt,col='#e9c46a'){this.x=x;this.y=y;this.txt=txt;this.col=col;this.life=45;this.maxL=45;}
+  update(){this.y-=0.8;this.life--;}
+  draw(ctx){
+    ctx.save();ctx.globalAlpha=this.life/this.maxL;
+    ctx.fillStyle=this.col;ctx.shadowColor=this.col;ctx.shadowBlur=8;
+    ctx.font='bold 16px "Courier New"';ctx.textAlign='center';
+    ctx.fillText(this.txt,this.x,this.y);ctx.restore();
+  }
+  get dead(){return this.life<=0;}
+}
+
+// ── Game ─────────────────────────────────────────────────────────────────────
+class Game{
+  constructor(){
+    this.canvas=document.getElementById('game');
+    this.ctx=this.canvas.getContext('2d');
+    this.canvas.width=W;this.canvas.height=H;
+    this.t=0;this.state='start';
+    this.inp={left:false,right:false,jump:false,jumpPressed:false};
+    this.setupInput();this.init();
+  }
+  setupInput(){
+    const map={ArrowLeft:'left',KeyA:'left',ArrowRight:'right',KeyD:'right',ArrowUp:'jump',KeyW:'jump',Space:'jump'};
+    addEventListener('keydown',e=>{
+      const a=map[e.code];if(!a)return;e.preventDefault();
+      if(a==='jump'){
+        if(!this.inp.jump)this.inp.jumpPressed=true;
+        this.inp.jump=true;
+        if(this.state!=='playing')this.restart();
+      }else this.inp[a]=true;
+    });
+    addEventListener('keyup',e=>{
+      const a=map[e.code];if(!a)return;
+      if(a==='jump')this.inp.jump=false;else this.inp[a]=false;
+    });
+  }
+  init(){
+    this.ps=new Particles();
+    this.bg=new Background();
+    this.camera=new Camera();
+    const{plats,enemies,gems}=buildLevel();
+    this.plats=plats;this.enemies=enemies;this.gems=gems;
+    this.player=new Player(80,H-200);
+    this.floats=[];
+    this.levelW=5100;
+  }
+  restart(){this.init();this.state='playing';}
+  update(){
+    this.t++;this.bg.update();
+    if(this.state!=='playing')return;
+    const inp={...this.inp};this.inp.jumpPressed=false;
+    this.player.update(inp,this.plats,this.ps);
+    this.camera.update(this.player);
+    const fx=this.levelW;
+    for(const e of this.enemies){
+      if(!e.alive)continue;
+      if(e instanceof Inspector)e.update(this.plats,fx);
+      else if(e instanceof FormularioVolador)e.update();
+      else if(e instanceof CartaApremio)e.update(this.plats,fx,this.ps);
+    }
+    this.gems.forEach(g=>{if(!g.collected)g.update();});
+    this.floats=this.floats.filter(f=>{f.update();return!f.dead;});
+    this.ps.update();
+    // player-enemy
+    if(this.player.inv===0&&this.player.respawn===0){
+      for(const e of this.enemies){
+        if(!e.alive)continue;
+        const pr=this.player.rect,er=e.rect;
+        if(overlap(pr,er)){
+          const pBot=pr.y+pr.h,eTop=er.y;
+          if(this.player.vy>0&&pBot-this.player.vy<=eTop+12){
+            e.stomp();this.player.vy=JFORCE*0.55;this.player.score+=100;
+            this.camera.shake(6);
+            this.ps.emit(e.x+e.w/2,e.y+e.h/2,{count:14,col:'#ff7700',minSpd:2,maxSpd:6,minSz:3,maxSz:8,minL:25,maxL:50,grav:0.05});
+            this.floats.push(new FloatText(e.x+e.w/2,e.y-10,'+100','#9b4fff'));
+          }else{
+            this.player.hurt(this.ps);this.camera.shake(8);
+          }
+        }
+      }
+    }
+    // player-gems
+    for(const g of this.gems){
+      if(g.collected)continue;
+      if(overlap(this.player.rect,g.rect)){
+        g.collected=true;this.player.score+=50;
+        this.ps.emit(g.x,g.y,{count:8,col:'#ffe135',minSpd:1,maxSpd:4,minSz:2,maxSz:5,minL:20,maxL:35,grav:0.02});
+        this.floats.push(new FloatText(g.x,g.y-10,'+50','#e9c46a'));
+      }
+    }
+    if(this.player.lives<=0)this.state='gameover';
+    if(this.player.x>this.levelW-200)this.state='win';
+  }
+  draw(){
+    const ctx=this.ctx;ctx.clearRect(0,0,W,H);
+    this.bg.draw(ctx,this.camera.x);
+    ctx.save();this.camera.apply(ctx);
+    this.plats.forEach(p=>p.draw(ctx));
+    // ── Lava pit — fully visible below all ground gaps ──────────────────────
+    // Deep lava fill from below ground to bottom
+    const lavaBg=ctx.createLinearGradient(0,H-60,0,H+60);
+    lavaBg.addColorStop(0,'#ff6600');lavaBg.addColorStop(0.25,'#dd2200');lavaBg.addColorStop(0.6,'#990000');lavaBg.addColorStop(1,'#330000');
+    ctx.fillStyle=lavaBg;ctx.fillRect(-200,H-60,this.levelW+400,120);
+    // Bright animated lava surface line
+    ctx.shadowColor='#ffaa00';ctx.shadowBlur=40;
+    for(let lx=-200;lx<this.levelW+200;lx+=80){
+      const wave=Math.sin(this.t*0.07+lx*0.015)*5;
+      ctx.fillStyle=`rgba(255,${Math.floor(180+Math.sin(this.t*0.05+lx*0.02)*60)},0,1)`;
+      ctx.beginPath();ctx.ellipse(lx+this.camera.x%80,H-56+wave,44,10,0,0,Math.PI*2);ctx.fill();
+    }
+    ctx.shadowBlur=0;
+    // Lava bubble blobs
+    for(let i=0;i<6;i++){
+      const bx=((i*280+this.t*0.8*(i%2?1:-1))%(this.levelW+400)-200);
+      const bpulse=0.5+Math.sin(this.t*0.12+i*1.5)*0.5;
+      ctx.globalAlpha=0.55+bpulse*0.35;
+      ctx.fillStyle=`rgba(255,${Math.floor(100+bpulse*100)},0,1)`;
+      ctx.shadowColor='#ff6600';ctx.shadowBlur=18;
+      ctx.beginPath();ctx.arc(bx,H-50+bpulse*4,12+bpulse*6,0,Math.PI*2);ctx.fill();
+    }
+    ctx.globalAlpha=1;ctx.shadowBlur=0;
+    // Danger heat shimmer glow rising from lava
+    for(let sx=0;sx<W;sx+=120){
+      const shimmerX=sx+this.camera.x%120-60;
+      ctx.globalAlpha=0.07+Math.sin(this.t*0.05+sx)*0.04;
+      ctx.fillStyle='#ff4400';ctx.shadowColor='#ff4400';ctx.shadowBlur=30;
+      ctx.beginPath();ctx.ellipse(shimmerX,H-75,55,35,0,0,Math.PI*2);ctx.fill();
+    }
+    ctx.globalAlpha=1;ctx.shadowBlur=0;
+    this.gems.forEach(g=>{if(!g.collected)g.draw(ctx);});
+    this.enemies.forEach(e=>{if(e.alive)e.draw(ctx);});
+    this.player.draw(ctx);
+    this.ps.draw(ctx);
+    this.floats.forEach(f=>f.draw(ctx));
+    // goal flag
+    const gx=this.levelW-150,gy=H-220;
+    ctx.strokeStyle='#e9c46a';ctx.lineWidth=4;ctx.shadowColor='#e9c46a';ctx.shadowBlur=12;
+    ctx.beginPath();ctx.moveTo(gx,gy);ctx.lineTo(gx,H-60);ctx.stroke();
+    ctx.fillStyle='#e9c46a';ctx.beginPath();ctx.moveTo(gx,gy);ctx.lineTo(gx+50,gy+20);ctx.lineTo(gx,gy+40);ctx.fill();
+    ctx.shadowBlur=0;ctx.textAlign='center';ctx.fillStyle='#e9c46a';ctx.font='bold 13px "Courier New"';
+    ctx.fillText('FINISH',gx+10,gy-12);
+    ctx.restore();
+    if(this.state==='playing')drawHUD(ctx,this.player,this.levelW);
+    if(this.state==='start')drawStart(ctx,this.t);
+    else if(this.state==='gameover')drawGameOver(ctx,this.player.score,this.t);
+    else if(this.state==='win')drawWin(ctx,this.player.score,this.t);
+  }
+  run(){const loop=()=>{this.update();this.draw();requestAnimationFrame(loop);};requestAnimationFrame(loop);}
+}
+
+new Game().run();
+</script>
+</body>
+</html>
