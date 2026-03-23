@@ -242,23 +242,22 @@ class FormularioVolador extends Enemy{
   }
   draw(ctx){
     const{x,y,t}=this;
-    const wobble=Math.sin(t*2)*3;
+    const wobble=Math.sin(t*2)*0.12;
+    // rotate around center of the paper (18,15 from top-left)
     ctx.save();
-    ctx.translate(x+18,y+15);ctx.rotate(wobble*0.04);ctx.translate(-18,-15);
-    // paper
+    ctx.translate(x+18,y+15);ctx.rotate(wobble);
+    // all coords now relative to center
     ctx.shadowColor='#c0392b';ctx.shadowBlur=10;
     ctx.fillStyle='#f5f0e8';
-    ctx.beginPath();ctx.roundRect(x,y,36,30,2);ctx.fill();
+    ctx.beginPath();ctx.roundRect(-18,-15,36,30,2);ctx.fill();
     ctx.shadowBlur=0;
-    // red header bar
-    ctx.fillStyle='#c0392b';ctx.beginPath();ctx.roundRect(x,y,36,8,2);ctx.fill();
+    ctx.fillStyle='#c0392b';ctx.beginPath();ctx.roundRect(-18,-15,36,8,2);ctx.fill();
     ctx.fillStyle='#fff';ctx.font='bold 5px sans-serif';ctx.textAlign='center';
-    ctx.fillText('HACIENDA',x+18,y+6);
-    // text lines
-    ctx.fillStyle='#666';ctx.fillRect(x+3,y+11,20,2);ctx.fillRect(x+3,y+15,28,2);ctx.fillRect(x+3,y+19,24,2);ctx.fillRect(x+3,y+23,16,2);
-    // angry stamp
-    ctx.fillStyle='rgba(192,57,43,0.7)';ctx.font='bold 8px sans-serif';ctx.textAlign='center';
-    ctx.save();ctx.translate(x+28,y+22);ctx.rotate(-0.4);ctx.fillText('DEBE',0,0);ctx.restore();
+    ctx.fillText('HACIENDA',0,-10);
+    ctx.fillStyle='#666';
+    ctx.fillRect(-15,-4,20,2);ctx.fillRect(-15,0,28,2);ctx.fillRect(-15,4,24,2);ctx.fillRect(-15,8,16,2);
+    ctx.fillStyle='rgba(192,57,43,0.85)';ctx.font='bold 8px sans-serif';
+    ctx.save();ctx.rotate(-0.4);ctx.fillText('DEBE',8,8);ctx.restore();
     ctx.restore();
   }
 }
@@ -281,17 +280,18 @@ class CartaApremio extends Enemy{
   }
   draw(ctx){
     const{x,y,t}=this;
-    const spin=t*0.08;
-    ctx.save();ctx.translate(x+13,y+10);ctx.rotate(spin);ctx.translate(-13,-10);
+    const spin=Math.sin(t*0.08)*0.4;
+    // rotate around center of envelope (13,10 from top-left)
+    ctx.save();
+    ctx.translate(x+13,y+10);ctx.rotate(spin);
     ctx.shadowColor='#c0392b';ctx.shadowBlur=8;
-    // envelope body
-    ctx.fillStyle='#f0e6d0';ctx.beginPath();ctx.roundRect(x,y,26,20,2);ctx.fill();
+    ctx.fillStyle='#f0e6d0';
+    ctx.beginPath();ctx.roundRect(-13,-10,26,20,2);ctx.fill();
     ctx.strokeStyle='#c0392b';ctx.lineWidth=1.5;ctx.stroke();
     // envelope flap V
-    ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+13,y+11);ctx.lineTo(x+26,y);ctx.stroke();
-    // angry red stamp
+    ctx.beginPath();ctx.moveTo(-13,-10);ctx.lineTo(0,1);ctx.lineTo(13,-10);ctx.stroke();
     ctx.fillStyle='rgba(192,57,43,0.9)';ctx.font='bold 6px sans-serif';ctx.textAlign='center';
-    ctx.fillText('APREMIO',x+13,y+16);
+    ctx.fillText('APREMIO',0,6);
     ctx.shadowBlur=0;ctx.restore();
   }
 }
